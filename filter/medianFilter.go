@@ -33,6 +33,13 @@ func makeImmutableMatrix(matrix [][]uint8) func(y, x int) uint8 {
 	}
 }
 
+func worker(startY, endY, startX, endX int, data func(y, x int) uint8, out chan<- [][]uint8) {
+	// 1. 在 startY 到 endY 和 startX 到 endX 范围内应用中值滤波器
+	filteredData := medianFilter(startY, endY, startX, endX, data)
+	// 2. 将结果发送到通道
+	out <- filteredData
+}
+
 // medianFilter applies the filter between the given x and y bounds on the given closure.
 // medianFilter returns the section where the filter was applied as a 2D slice.
 func medianFilter(startY, endY, startX, endX int, data func(y, x int) uint8) [][]uint8 {
@@ -114,11 +121,44 @@ func filter(filepathIn, filepathOut string, threads int) {
 
 	immutableData := makeImmutableMatrix(getPixelData(img))
 	var newPixelData [][]uint8
-	
+
 	if threads == 1 {
 		newPixelData = medianFilter(0, height, 0, width, immutableData)
 	} else {
-		panic("TODO Implement me")
+		// 多线程处理图像
+		resultChan := make([]chan [][]uint8, threads)
+		partitionSize := height / threads
+
+		// 初始化通道
+		for i := 0; i < threads; i++ {
+			resultChan[i] = make(chan [][]uint8)
+		}
+
+		// 启动多个线程
+		for t := 0; t < threads; t++ {
+			startY := t * partitionSize
+			endY := (t + 1) * partitionSize
+			if t == threads-1 {
+				endY = height
+			}
+
+			// 使用 worker 函数启动每个 goroutine
+			go worker(startY, endY, 0, width, immutableData, resultChan[t])
+		}
+
+		// 创建最终的图像矩阵
+		newPixelData = makeMatrix(height, width)
+
+		// 收集所有线程的处理结果
+		for t := 0; t < threads; t++ {
+			partialResult := <-resultChan[t]
+			startY := t * partitionSize
+			for i := startY; i < startY+len(partialResult); i++ {
+				for j := 0; j < width; j++ {
+					newPixelData[i][j] = partialResult[i-startY][j]
+				}
+			}
+		}
 	}
 
 	imout := image.NewGray(image.Rect(0, 0, width, height))
